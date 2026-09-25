@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Route Map - Spotter.ai</title>
+    <!-- Mapbox GL JS CSS -->
+    <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet">
+    <style>
+        body { margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        #map { position: absolute; top: 0; bottom: 0; width: 100%; }
+        
+        /* Overlay search panel top-left */
+        .search-box {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 10;
+            background: rgba(255, 255, 255, 0.95);
+            padding: 16px;
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.15);
+            width: 300px;
+            backdrop-filter: blur(5px);
+        }
+
+        .search-box h3 {
+            margin: 0 0 12px 0;
+            font-size: 16px;
+            color: #2c3e50;
+        }
+
+        .input-group {
+            margin-bottom: 10px;
+        }
+
+        .input-group label {
+            display: block;
+            font-size: 12px;
+            font-weight: 600;
+            color: #7f8c8d;
+            margin-bottom: 4px;
+        }
+
+        .input-group input {
+            width: 100%;
+            padding: 8px 10px;
+            border: 1px solid #bdc3c7;
+            border-radius: 6px;
+            font-size: 14px;
+            box-sizing: border-box;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .input-group input:focus {
+            border-color: #3498db;
+        }
+
+        .search-btn {
+            width: 100%;
+            padding: 10px;
+            background: #27ae60;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-weight: bold;
+            font-size: 14px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .search-btn:hover {
+            background: #219150;
+        }
+
+        /* Status box (loading / errors) */
+        #status-msg {
+            margin-top: 10px;
+            font-size: 13px;
+            display: none;
+            padding: 8px;
+            border-radius: 5px;
+        }
+
+        .status-loading {
+            background: #f39c12;
+            color: white;
+        }
+
+        .status-error {
+            background: #e74c3c;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Search Form -->
+    <div class="search-box">
+        <h3>📍 Route Calculation</h3>
+        <form id="route-form">
+            <div class="input-group">
+                <label for="start-input">Start:</label>
+                <input type="text" id="start-input" placeholder="e.g., New York, NY" required>
+            </div>
+            <div class="input-group">
+                <label for="finish-input">Finish:</label>
+                <input type="text" id="finish-input" placeholder="e.g., Los Angeles, CA" required>
+            </div>
+            <button type="submit" class="search-btn">🔍 Calculate Route</button>
+        </form>
+        <div id="status-msg"></div>
+    </div>
+
+    <!-- Map Container -->
+    <div id="map"></div>
+
+    <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
+    <script>
+        // ⚠️ REPLACE WITH YOUR REAL MAPBOX PUBLIC TOKEN (e.g., pk.ey...)
+        mapboxgl.accessToken = '{{ mapbox_access_token }}';
+
+        const form = document.getElementById('route-form');
+        const startInput = document.getElementById('start-input');
+        const finishInput = document.getElementById('finish-input');
+        const statusMsg = document.getElementById('status-msg');
+
+        let currentMarkers = [];
+
+        // Pre-fill fields with URL parameters if they exist, otherwise fallback to defaults
+        const urlParams = new URLSearchParams(window.location.search);
+        const initialStart = urlParams.get('start') || 'New York, NY';
+        const initialFinish = urlParams.get('finish') || 'Los Angeles, CA';
+
+        startInput.value = initialStart;
+        finishInput.value = initialFinish;
+
+        function showStatus(msg, type) {
+            statusMsg.innerText = msg;
+            statusMsg.className = type === 'error' ? 'status-error' : 'status-loading';
+            statusMsg.style.display = 'block';
+        }
+
+        function hideStatus() {
+            statusMsg.style.display = 'none';
+        }
+
+        // Initialize the interactive map
+        const map = new mapboxgl.Map({
+            container: 'map',
+            style: 'mapbox://styles/mapbox/streets-v12',
+            center: [-98.5795, 39.8283],
+            zoom: 4
+        });
+
+        // Function to query the Django API and update the map
+        async function fetchAndRenderRoute(start, finish) {
+            showStatus('⏳ Calculating route and optimizing...', 'loading');
+
+            // 1. Clear existing markers
+            currentMarkers.forEach(marker => marker.remove());
+            currentMarkers = [];
+
+            try {
+                const apiUrl = `/api/route/?start=${encodeURIComponent(start)}&finish=${encodeURIComponent(finish)}&format=json`;
+                const response = await fetch(apiUrl);
+
+                if (!response.ok) {
+                    const errData = await response.json();
+                    throw new Error(errData.error || `HTTP Error ${response.status}`);
+                }
+
+                const data = await response.json();
+
+                // 2. Update route geometry line
+                if (map.getSource('route-source')) {
+                    map.getSource('route-source').setData(data.route_geometry);
+                } else {
+                    map.addSource('route-source', {
+                        'type': 'geojson',
+                        'data': data.route_geometry
+                    });
+
+                    map.addLayer({
+                        'id': 'route-layer',
+                        'type': 'line',
+                        'source': 'route-source',
+                        'layout': { 'line-join': 'round', 'line-cap': 'round' },
+                        'paint': { 'line-color': '#007cbf', 'line-width': 5 }
+                    });
+                }
+
+                // 3. Automatically adjust map viewport to fit the complete route
+                const coordinates = data.route_geometry.coordinates;
+                const bounds = coordinates.reduce(
+                    (b, coord) => b.extend(coord),
+                    new mapboxgl.LngLatBounds(coordinates[0], coordinates[0])
+                );
+                map.fitBounds(bounds, { padding: 60 });
+
+                // 4. Add interactive markers for each optimized fuel station
+                data.fuel_stops.forEach(stop => {
+                    const popupContent = `
+                        <div style="color:#333;">
+                            <h4 style="margin:0 0 5px 0;">${stop.name}</h4>
+                            <p style="margin:0;"><b>City:</b> ${stop.city}, ${stop.state}</p>
+                            <p style="margin:0;"><b>Price:</b> $${stop.price.toFixed(3)}/gal</p>
+                            <p style="margin:0;"><b>Purchase:</b> ${stop.gallons_purchased} gal ($${stop.cost})</p>
+                        </div>
+                    `;
+
+                    const marker = new mapboxgl.Marker({ color: '#e74c3c' })
+                        .setLngLat([stop.longitude, stop.latitude])
+                        .setPopup(new mapboxgl.Popup().setHTML(popupContent))
+                        .addTo(map);
+
+                    currentMarkers.push(marker);
+                });
+
+                hideStatus();
+
+                // 5. Update browser address bar dynamically without reloading the page
+                const newUrl = `${window.location.pathname}?start=${encodeURIComponent(start)}&finish=${encodeURIComponent(finish)}`;
+                window.history.pushState({ path: newUrl }, '', newUrl);
+
+            } catch (err) {
+                showStatus('❌ ' + err.message, 'error');
+            }
+        }
+
+        // First initial layout trigger on map load
+        map.on('load', () => {
+            fetchAndRenderRoute(initialStart, initialFinish);
+        });
+
+        // Form submission event listener
+        form.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const start = startInput.value.trim();
+            const finish = finishInput.value.trim();
+
+            if (start && finish) {
+                fetchAndRenderRoute(start, finish);
+            }
+        });
+    </script>
+</body>
+</html>
