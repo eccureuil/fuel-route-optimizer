@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 
 import os
 from pathlib import Path
+import environ
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -20,8 +21,23 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.1/howto/deployment/checklist/
 
+# Initialize environ
+env_path = BASE_DIR / '.env' 
+if env_path.exists(): 
+    with open(env_path, 'r', encoding='utf-8') as f: 
+        for line in f: 
+            line = line.strip() 
+            if line and not line.startswith('#') and '=' in line: 
+                key, val = line.split('=', 1) 
+                os.environ[key.strip()] = val.strip().strip("'").strip('"')
+                
+env = environ.Env(
+    MAPBOX_ACCESS_TOKEN=(str, '')
+) 
 
-MAPBOX_ACCESS_TOKEN = os.getenv('MAPBOX_ACCESS_TOKEN')
+
+
+MAPBOX_ACCESS_TOKEN = env('MAPBOX_ACCESS_TOKEN')
 
 if not MAPBOX_ACCESS_TOKEN:
     raise ValueError("MAPBOX_ACCESS_TOKEN isn't configured in the environment variables.")
