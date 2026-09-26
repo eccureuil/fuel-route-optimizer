@@ -115,7 +115,7 @@ The core optimization engine (`FuelOptimizerService`) evaluates routes through a
 
 ### 2. Clone & Virtual Environment
 ```bash
-git clone https://github.com/votre-compte/fuel-route-optimizer.git
+git clone https://github.com/eccureuil/fuel-route-optimizer.git
 cd fuel-route-optimizer
 
 python -m venv venv
