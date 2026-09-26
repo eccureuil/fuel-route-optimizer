@@ -85,23 +85,33 @@
             margin-top: 10px;
             font-size: 13px;
             display: none;
-            padding: 8px;
+            padding: 10px;
             border-radius: 5px;
+            border-left: 4px solid #e74c3c;
         }
 
         .status-loading {
-            background: #f39c12;
-            color: white;
+            background: #fff3cd;
+            color: #856404;
+            border-left-color: #f39c12;
         }
 
         .status-error {
-            background: #e74c3c;
-            color: white;
+            background: #f8d7da;
+            color: #721c24;
+            border-left-color: #e74c3c;
         }
 
         .status-success {
-            background: #27ae60;
-            color: white;
+            background: #d4edda;
+            color: #155724;
+            border-left-color: #27ae60;
+        }
+
+        .status-warning {
+            background: #fff3cd;
+            color: #856404;
+            border-left-color: #ffc107;
         }
 
         /* Route summary panel */
@@ -181,6 +191,23 @@
             color: #7f8c8d;
             margin-top: 2px;
         }
+
+        /* Error details */
+        #error-details {
+            display: none;
+            margin-top: 12px;
+            padding: 10px;
+            background: #f8d7da;
+            border: 1px solid #f5c6cb;
+            border-radius: 6px;
+            font-size: 12px;
+            color: #721c24;
+        }
+
+        .error-title {
+            font-weight: bold;
+            margin-bottom: 6px;
+        }
     </style>
 </head>
 <body>
@@ -226,6 +253,12 @@
             </div>
         </div>
 
+        <!-- Error Details (for infeasible routes) -->
+        <div id="error-details">
+            <div class="error-title">⚠️ Route Infeasible</div>
+            <p id="error-message" style="margin: 0; font-size: 12px;"></p>
+        </div>
+
         <!-- Fuel Stops List -->
         <div id="fuel-stops-list"></div>
     </div>
@@ -235,7 +268,7 @@
 
     <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
     <script>
-        mapboxgl.accessToken = '{{ mapbox_access_token }}';
+        mapboxgl.accessToken = '{{ mapbox_token }}';
 
         const form = document.getElementById('route-form');
         const startInput = document.getElementById('start-input');
@@ -244,6 +277,7 @@
         const statusMsg = document.getElementById('status-msg');
         const routeSummary = document.getElementById('route-summary');
         const fuelStopsList = document.getElementById('fuel-stops-list');
+        const errorDetails = document.getElementById('error-details');
 
         let currentMarkers = [];
         let currentRouteData = null;
@@ -278,7 +312,7 @@
             zoom: 4
         });
 
-        // Function to render route summary and stops list
+        // Function to render route summary and stops list (success case)
         function renderSummary(apiData) {
             const data = apiData.data;
 
@@ -319,86 +353,224 @@
             fuelStopsList.style.display = 'block';
         }
 
-        // Function to query the Django API and update the map
-        async function fetchAndRenderRoute(start, finish) {
-            showStatus('⏳ Calculating route and optimizing...', 'loading');
-            calculateBtn.disabled = true;
+        // Function to visualize error with candidate stations and red gap lines
+        function renderErrorRoute(apiData) {
+            const data = apiData.data;
+            errorDetails.style.display = 'block';
+            document.getElementById('error-message').innerText = apiData.message;
 
-            // Clear existing markers
-            currentMarkers.forEach(marker => marker.remove());
-            currentMarkers = [];
-            fuelStopsList.style.display = 'none';
             routeSummary.style.display = 'none';
+            fuelStopsList.style.display = 'none';
 
-            try {
-                // DEBUG: Log the API URL
-                const apiUrl = `/api/route/?start=${encodeURIComponent(start)}&finish=${encodeURIComponent(finish)}`;
-                console.log('🔗 Calling API URL:', apiUrl);
+            // 1. Render the route geometry (in blue)
+            map.addSource('route-source', {
+                'type': 'geojson',
+                'data': data.route_geometry
+            });
 
-                const response = await fetch(apiUrl);
+            map.addLayer({
+                'id': 'route-layer',
+                'type': 'line',
+                'source': 'route-source',
+                'layout': { 'line-join': 'round', 'line-cap': 'round' },
+                'paint': { 'line-color': '#007cbf', 'line-width': 5 }
+            });
 
-                // DEBUG: Log response status
-                console.log('📊 Response Status:', response.status, response.statusText);
-                console.log('📋 Response Headers:', {
-                    'content-type': response.headers.get('content-type')
+            // 2. Add candidate stations as orange markers
+            if (data.candidate_stations && data.candidate_stations.length > 0) {
+                data.candidate_stations.forEach((station, index) => {
+                    const popupContent = `
+                        <div style="color:#333; font-size: 12px;">
+                            <h4 style="margin:0 0 6px 0; color: #e67e22;"><strong>${station.name}</strong></h4>
+                            <p style="margin:0 0 4px 0;">${station.address}</p>
+                            <p style="margin:0 0 4px 0;">${station.city}, ${station.state}</p>
+                            <hr style="margin: 4px 0; border: none; border-top: 1px solid #ecf0f1;">
+                            <p style="margin:0;"><b>Distance from start:</b> ${formatNumber(station.distance_from_start_miles)} miles</p>
+                        </div>
+                    `;
+
+                    const marker = new mapboxgl.Marker({ color: '#f39c12' })  // Orange
+                        .setLngLat([station.coordinates.longitude, station.coordinates.latitude])
+                        .setPopup(new mapboxgl.Popup({ offset: 25 }).setHTML(popupContent))
+                        .addTo(map);
+
+                    currentMarkers.push(marker);
                 });
 
-                if (!response.ok) {
-                    // DEBUG: Get response text to see what's returned
-                    const responseText = await response.text();
-                    console.error('❌ Error Response (first 500 chars):', responseText.substring(0, 500));
-                    throw new Error(`Error : ${response.status} ${response.statusText}`);
+                // 3. Draw red lines showing gaps between stations (> 500 miles)
+                const maxRange = data.max_truck_range_miles || 500;
+                const routeCoords = data.route_geometry.coordinates;
+                
+                // Sort stations by distance from start
+                const sortedStations = [...data.candidate_stations].sort(
+                    (a, b) => a.distance_from_start_miles - b.distance_from_start_miles
+                );
+
+                // Check gaps and create red lines for problematic ones
+                const gapLines = [];
+                let prevPos = 0;
+
+                sortedStations.forEach((station, index) => {
+                    const gap = station.distance_from_start_miles - prevPos;
+                    
+                    // If gap > max range, draw red line to show problem
+                    if (gap > maxRange) {
+                        // Find approximate coordinates for the gap
+                        // Get start point (approximate)
+                        const startCoord = index === 0 ? routeCoords[0] : findNearestRoutePoint(routeCoords, prevPos);
+                        // Get end point (approximate)
+                        const endCoord = findNearestRoutePoint(routeCoords, station.distance_from_start_miles);
+                        
+                        gapLines.push({
+                            type: 'Feature',
+                            geometry: {
+                                type: 'LineString',
+                                coordinates: [startCoord, endCoord]
+                            }
+                        });
+                    }
+                    prevPos = station.distance_from_start_miles;
+                });
+
+                // Check final gap to destination
+                const finalGap = data.total_distance_miles - prevPos;
+                if (finalGap > maxRange) {
+                    const startCoord = findNearestRoutePoint(routeCoords, prevPos);
+                    const endCoord = routeCoords[routeCoords.length - 1];
+                    gapLines.push({
+                        type: 'Feature',
+                        geometry: {
+                            type: 'LineString',
+                            coordinates: [startCoord, endCoord]
+                        }
+                    });
                 }
 
-                // DEBUG: Get text first to see if it's valid JSON
-                const responseText = await response.text();
-                console.log('📝 Raw Response (first 500 chars):', responseText.substring(0, 500));
-
-                // Try to parse JSON
-                let apiData;
-                try {
-                    apiData = JSON.parse(responseText);
-                    console.log('✅ Valid JSON received');
-                } catch (e) {
-                    console.error('❌ Invalid JSON:', e.message);
-                    console.error('Response was:', responseText.substring(0, 1000));
-                    throw new Error('Server returned invalid JSON. Check browser console for details.');
-                }
-
-                // DEBUG: Log API response
-                console.log('📦 API Response:', apiData);
-
-                // Check API status
-                if (apiData.status === 'error') {
-                    console.warn('⚠️  API returned error:', apiData.message);
-                    throw new Error(apiData.message);
-                }
-
-                const data = apiData.data;
-                currentRouteData = apiData;
-
-                console.log('✅ Route data received successfully');
-                console.log('   - Distance:', data.total_distance_miles, 'miles');
-                console.log('   - Stops:', data.number_of_fuel_stops);
-                console.log('   - Cost: $' + data.total_fuel_cost);
-
-                // 1. Update route geometry line
-                if (map.getSource('route-source')) {
-                    map.getSource('route-source').setData(data.route_geometry);
-                } else {
-                    map.addSource('route-source', {
+                // Add red gap lines to map
+                if (gapLines.length > 0) {
+                    map.addSource('gap-source', {
                         'type': 'geojson',
-                        'data': data.route_geometry
+                        'data': {
+                            'type': 'FeatureCollection',
+                            'features': gapLines
+                        }
                     });
 
                     map.addLayer({
-                        'id': 'route-layer',
+                        'id': 'gap-layer',
                         'type': 'line',
-                        'source': 'route-source',
+                        'source': 'gap-source',
                         'layout': { 'line-join': 'round', 'line-cap': 'round' },
-                        'paint': { 'line-color': '#007cbf', 'line-width': 5 }
+                        'paint': { 
+                            'line-color': '#e74c3c',  // Red
+                            'line-width': 4,
+                            'line-dasharray': [5, 5]  // Dashed line
+                        }
                     });
                 }
+            }
+
+            // Adjust map to fit route
+            const coordinates = data.route_geometry.coordinates;
+            const bounds = coordinates.reduce(
+                (b, coord) => b.extend(coord),
+                new mapboxgl.LngLatBounds(coordinates[0], coordinates[0])
+            );
+            map.fitBounds(bounds, { padding: 80 });
+        }
+
+        // Helper function to find nearest route point to a given distance
+        function findNearestRoutePoint(routeCoords, targetDistance) {
+            let cumulativeDist = 0;
+            
+            for (let i = 0; i < routeCoords.length - 1; i++) {
+                const from = routeCoords[i];
+                const to = routeCoords[i + 1];
+                const segmentDist = haversineDistance(from[1], from[0], to[1], to[0]);
+                
+                if (cumulativeDist + segmentDist >= targetDistance) {
+                    // Interpolate within this segment
+                    const ratio = (targetDistance - cumulativeDist) / segmentDist;
+                    const lon = from[0] + (to[0] - from[0]) * ratio;
+                    const lat = from[1] + (to[1] - from[1]) * ratio;
+                    return [lon, lat];
+                }
+                cumulativeDist += segmentDist;
+            }
+            
+            return routeCoords[routeCoords.length - 1];
+        }
+
+        // Haversine distance in miles
+        function haversineDistance(lat1, lon1, lat2, lon2) {
+            const R = 3958.8;  // Earth radius in miles
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                      Math.sin(dLon/2) * Math.sin(dLon/2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            return R * c;
+        }
+
+        // Function to query the Django API and update the map
+        async function fetchAndRenderRoute(start, finish) {
+            showStatus('⏳ Calculating route...', 'loading');
+            calculateBtn.disabled = true;
+
+            // Clear existing markers and layers
+            currentMarkers.forEach(marker => marker.remove());
+            currentMarkers = [];
+
+            // Remove existing map layers and sources
+            if (map.getLayer('route-layer')) map.removeLayer('route-layer');
+            if (map.getSource('route-source')) map.removeSource('route-source');
+            if (map.getLayer('gap-layer')) map.removeLayer('gap-layer');
+            if (map.getSource('gap-source')) map.removeSource('gap-source');
+
+            fuelStopsList.style.display = 'none';
+            routeSummary.style.display = 'none';
+            errorDetails.style.display = 'none';
+
+            try {
+                const apiUrl = `/api/route/?start=${encodeURIComponent(start)}&finish=${encodeURIComponent(finish)}`;
+
+                const response = await fetch(apiUrl);
+                const responseText = await response.text();
+
+                let apiData;
+                try {
+                    apiData = JSON.parse(responseText);
+                } catch (e) {
+                    throw new Error('Server returned invalid JSON');
+                }
+
+                // Handle both success (200) and error (400) responses
+                if (apiData.status === 'error') {
+                    // ERROR CASE: Route is infeasible but we still have route geometry
+                    console.warn('Route optimization failed:', apiData.message);
+                    renderErrorRoute(apiData);
+                    showStatus(apiData.message, 'warning');
+                    return;
+                }
+
+                // SUCCESS CASE
+                const data = apiData.data;
+                currentRouteData = apiData;
+
+                // 1. Update route geometry line (blue)
+                map.addSource('route-source', {
+                    'type': 'geojson',
+                    'data': data.route_geometry
+                });
+
+                map.addLayer({
+                    'id': 'route-layer',
+                    'type': 'line',
+                    'source': 'route-source',
+                    'layout': { 'line-join': 'round', 'line-cap': 'round' },
+                    'paint': { 'line-color': '#007cbf', 'line-width': 5 }
+                });
 
                 // 2. Automatically adjust map viewport to fit the complete route
                 const coordinates = data.route_geometry.coordinates;
@@ -444,23 +616,11 @@
                 window.history.pushState({ path: newUrl }, '', newUrl);
 
             } catch (err) {
-                console.error('❌ Route optimization failed:', err);
-                console.error('   Error Message:', err.message);
-                console.error('   Stack:', err.stack);
-                
-                // Show helpful error message
-                let errorMsg = err.message;
-                if (err.message.includes('Unexpected token')) {
-                    errorMsg = '❌ Server returned HTML instead of JSON. Check that API endpoint is correct in urls.py';
-                } else if (err.message.includes('HTTP Error 404')) {
-                    errorMsg = '❌ API endpoint not found (/api/fuel-route/). Check urls.py';
-                } else if (err.message.includes('HTTP Error 500')) {
-                    errorMsg = '❌ Server error. Check Django console for details';
-                }
-                
-                showStatus(errorMsg, 'error');
+                console.error('❌ Route error:', err);
+                showStatus('❌ ' + err.message, 'error');
                 routeSummary.style.display = 'none';
                 fuelStopsList.style.display = 'none';
+                errorDetails.style.display = 'none';
             } finally {
                 calculateBtn.disabled = false;
             }
@@ -468,9 +628,6 @@
 
         // Initial map load
         map.on('load', () => {
-            console.log('🗺️  Map loaded successfully');
-            console.log('🔧 Mapbox token set:', !!mapboxgl.accessToken);
-            console.log('📍 Initial route: ' + initialStart + ' → ' + initialFinish);
             fetchAndRenderRoute(initialStart, initialFinish);
         });
 

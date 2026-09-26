@@ -24,13 +24,17 @@ class FuelRouteView(APIView):
     """
     API endpoint to compute optimal fuel stops and route geometry between two US locations.
     
+    Returns route with stops on success (200).
+    Returns route with error message and candidate stations on failure (400).
+    This allows frontend to visualize the problematic gap.
+    
     Query Parameters:
         start (str): Starting location name/address
         finish (str): Destination location name/address
         
     Returns:
-        200: Complete route with fuel stops and optimization metrics
-        400: Missing/invalid parameters or geocoding error
+        200: Complete route with optimized fuel stops
+        400: Route with error message (includes route geometry and candidate stations for visualization)
         500: Unexpected server error
     """
 
@@ -70,8 +74,14 @@ class FuelRouteView(APIView):
 
             # Step 4: Check optimization status
             if optimization_result['status'] == 'error':
-                # Route is infeasible
+                # Route is infeasible BUT still return candidate stations for visualization
                 logger.warning(f"Route optimization failed: {optimization_result['message']}")
+                
+                # Get candidate stations even though optimization failed
+                candidate_stations, total_route_miles = (
+                    optimizer_service.filter_candidate_stations(coords)
+                )
+
                 return Response(
                     {
                         'status': 'error',
@@ -80,8 +90,11 @@ class FuelRouteView(APIView):
                             'start_location': start_location,
                             'finish_location': finish_location,
                             'total_distance_miles': optimization_result['total_route_miles'],
-                            'max_truck_range_miles': optimization_result['max_range_miles'],                                                
+                            'max_truck_range_miles': optimization_result['max_range_miles'],
                             'route_geometry': route_data['geometry'],
+                            # ✅ Include candidate stations for gap visualization
+                            'candidate_stations': self._format_candidate_stations(candidate_stations),
+                            'total_candidate_stations': len(candidate_stations),
                         },
                     },
                     status=status.HTTP_400_BAD_REQUEST,
@@ -177,13 +190,47 @@ class FuelRouteView(APIView):
             })
         return formatted_stops
 
+    @staticmethod
+    def _format_candidate_stations(candidate_stations):
+        """
+        Format candidate stations for gap visualization.
+        Used when route optimization fails to show where stations are located.
+        
+        Args:
+            candidate_stations: List of candidate stations from filter
+            
+        Returns:
+            Formatted list for map visualization
+        """
+        formatted_stations = []
+        for i, station in enumerate(candidate_stations, 1):
+            formatted_stations.append({
+                'station_number': i,
+                'name': station['name'],
+                'address': station['address'],
+                'city': station['city'],
+                'state': station['state'],
+                'price_per_gallon': station['price'],
+                'distance_from_start_miles': station['dist_from_start'],
+                'off_route_distance_miles': station['off_route_miles'],
+                'coordinates': {
+                    'latitude': station['latitude'],
+                    'longitude': station['longitude'],
+                },
+            })
+        return formatted_stations
 
-# Optional: Fast route optimization endpoint (cached for 1 hour)
+
+# Cached endpoint for frequent routes
 @api_view(['GET'])
 def fuel_route_cached(request):
     """
     Cached version of FuelRouteView for frequently requested routes.
-    Cache key includes start and finish locations.
+    Cache key includes start and finish locations (1-hour TTL).
+    
+    Query Parameters:
+        start (str): Starting location
+        finish (str): Destination location
     """
     start_location = request.query_params.get('start', '').strip()
     finish_location = request.query_params.get('finish', '').strip()
@@ -193,13 +240,14 @@ def fuel_route_cached(request):
             {
                 'status': 'error',
                 'message': "Both 'start' and 'finish' query parameters are required.",
+                'cached': False,
             },
             status=status.HTTP_400_BAD_REQUEST,
         )
 
     # Create cache key from locations
     cache_key = f"fuel_route:{start_location}:{finish_location}"
-    
+
     # Check cache first
     cached_result = cache.get(cache_key)
     if cached_result:
@@ -207,12 +255,16 @@ def fuel_route_cached(request):
         return Response(cached_result, status=status.HTTP_200_OK)
 
     # If not cached, compute using FuelRouteView
-    view = FuelRouteView.as_view()
-    response = view(request)
-    
-    # Cache successful results for 1 hour
+    view = FuelRouteView()
+    response = view.get(request)
+
+    # Cache successful results for 1 hour (3600 seconds)
     if response.status_code == status.HTTP_200_OK and response.data.get('status') == 'success':
+        cache_data = response.data.copy()
+        cache_data['cached'] = False
+        cache.set(cache_key, cache_data, timeout=3600)
+
+    if response.status_code == status.HTTP_200_OK:
         response.data['cached'] = False
-        cache.set(cache_key, response.data, timeout=3600)  # 1 hour
-    
+
     return response
