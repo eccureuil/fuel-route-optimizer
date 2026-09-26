@@ -7,7 +7,6 @@
 ![Mapbox](https://img.shields.io/badge/Mapbox-GL_JS_%2F_Directions-000000?style=for-the-badge&logo=mapbox&logoColor=white)
 ![NumPy](https://img.shields.io/badge/NumPy-Vectorized-013243?style=for-the-badge&logo=numpy&logoColor=white)
 ![Redis](https://img.shields.io/badge/Redis-Cache_1h-DC382D?style=for-the-badge&logo=redis&logoColor=white)
-![License](https://img.shields.io/badge/License-MIT-brightgreen.svg?style=for-the-badge)
 
 An intelligent, high-performance route optimization REST API for heavy trucks traveling across the contiguous United States. The application calculates the most cost-effective fuel stops along a given route while enforcing vehicle range constraints, fuel tank capacities, spatial corridors, and strict performance limits.
 
@@ -163,7 +162,7 @@ __pycache__/
 python manage.py migrate
 
 # 2. Ingest Enriched Excel Dataset using Pandas Command
-python manage.py import_fuel_stations --csv-file=fuel_price_enriched_with_coordinates.xlsx
+python manage.py import_stations 
 
 # 3. Start Development Server
 python manage.py runserver
@@ -250,9 +249,9 @@ python manage.py runserver
 
 | Route Type | Distance | Direct Time | Cached Time | HTTP Status |
 | :--- | :--- | :--- | :--- | :--- |
-| **Short Route (< 500 mi)** | 95.2 mi | ~0.35 s | < 10 ms | `200 OK` (0 stops) |
-| **Long Route (Miami ➔ New York)** | 1,280.5 mi | ~1.45 s | < 10 ms | `200 OK` (3 stops) |
-| **Desert Zone / Gap > 500 mi** | 850.0 mi | ~0.40 s | N/A | `400 Bad Request` |
+| **Short Route (< 500 mi)** | 95.2 mi | ~1.5 s | < 10 ms | `200 OK` (0 stops) |
+| **Long Route (Miami ➔ New York)** | 1,280.5 mi | ~1.8 s | < 10 ms | `200 OK` (3 stops) |
+| **Desert Zone / Gap > 500 mi** | 850.0 mi | ~1.5 s | N/A | `400 Bad Request` |
 
 ---
 
